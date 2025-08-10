@@ -1,0 +1,400 @@
+---
+title: "Tonsil data clean up, mutaiton frequencies, BASELINe analysis and lineage reconstruction"
+output: html_document
+---
+
+Bulk Ig RNA seq of B cells sorted into naïve (IgD+CD38-), GC (IgD-CD38+), plasma cells (IgD-CD38hi) and MBC (IgD-CD38-). 
+
+# Load required packages
+```{r load packages, message=FALSE, warning=FALSE}
+library(alakazam)
+library(shazam)
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(googledrive)
+library(ggpubr)
+library(Hmisc)
+```
+
+# Import the composite dataset
+```{r import tonsil BCRs from all subjects, include=TRUE, warning=FALSE}
+temp <- tempfile(fileext = ".rds")
+dl <- drive_download(
+as_id("11xEnLuFgpvRHxzYE00oTryXLOexn1y94"), path = temp, overwrite = TRUE)
+bcp <- readRDS(file = dl$local_path)
+```
+
+# clean up subset and isotype information
+```{r remove ambiguoius annotations, include=TRUE, warning=FALSE,message=FALSE}
+
+bcp$germline <- sapply(strsplit(as.character(bcp$GERMLINE_V_CALL), split="*", fixed=TRUE), `[`, 1)
+
+bcp <- bcp %>%
+  subset(., SUBSET != "Total" & ISOTYPE %nin% c('IgE',
+                                                'Primer6_Horns2016',
+                                                'Primer1_1_70_Horns2016',
+                                                'Primer4_1_Horns2016',
+                                                'Primer2_Horns2016') &
+           IN_FRAME == "TRUE")
+```
+
+# isolate VH4-34 sequences
+```{r isoalte VH4-34, include=TRUE, message=FALSE, warning=FALSE}
+
+V434 <- subset(bcp, germline=="IGHV4-34")
+```
+
+## clonality and lineage analysis
+```{r split back into individual subjects and summarize expanded clones, include=TRUE, message=FALSE, warning=FALSE}
+
+V434<-split(V434, f= V434$subject)
+
+V434_clonesummary<-imap(V434, ~.x %>%
+                            select(., c(SUBSET, CLONE_ID, ISOTYPE)) %>%
+  group_by(SUBSET, CLONE_ID, ISOTYPE) %>%
+  summarise(n = n()) %>%
+    filter(., n>1 | duplicated(CLONE_ID)))
+
+V434_clonesum_wide<-imap(V434_clonesummary, ~.x %>% 
+                           pivot_wider(.,names_from = CLONE_ID, values_from = n))
+```
+
+# Process V434 dataframe to include only expanded clones and re-create clone summaries wider dataframe (keep clone_ids that are not unique)
+```{r}
+# all expanded clones
+bcp434expall<-subset(V434, !isUnique(CLONE_ID))
+bcp434expall<-split(bcp434expall, f= bcp434expall$subject)
+
+bcp434expall_clonesummary<-imap(bcp434expall, ~.x %>%
+                            select(., c(SUBSET, CLONE_ID, ISOTYPE)) %>%
+  group_by(SUBSET, CLONE_ID, ISOTYPE) %>%
+  summarise(n = n()))
+
+
+bcp_clonesum_expall_wide<-imap(bcp434expall_clonesummary, ~.x %>% 
+                          pivot_wider(.,names_from = CLONE_ID, values_from = n))
+
+wb <- createWorkbook()
+addWorksheet(wb, "VH434_allexpanded")
+
+curr_row <- 1
+for(i in seq_along(bcp_clonesum_expall_wide)) {
+  writeData(wb, "VH434_allexpanded", names(bcp_clonesum_expall_wide)[i], startCol = 1, startRow = curr_row)
+  writeData(wb, "VH434_allexpanded", bcp_clonesum_expall_wide[[i]], startCol = 1, startRow = curr_row+1)
+  curr_row <- curr_row + nrow(bcp_clonesum_expall_wide[[i]]) + 2
+}
+
+saveWorkbook(wb, ".../VH434_all_expanded_clones_by_subset_isotype.xlsx")
+```
+
+# Import list of expanded clones
+# create fucntion to import all sheets
+```{r get target expanded clones from previous analysis, include=TRUE, message=TRUE, warning=FALSE}
+
+library(readxl)     
+multiplesheets <- function(fname) { # getting info about all excel sheets 
+    sheets <- readxl::excel_sheets(fname) 
+    tibble <- lapply(sheets, function(x) readxl::read_excel(fname, sheet = x)) 
+    data_frame <- lapply(tibble, as.data.frame) 
+    
+    # assigning names to data frames 
+    names(data_frame) <- sheets 
+    
+    # print data frame 
+    print(data_frame) 
+}
+
+# specify the path
+path<-".../06062024 CLONE IDs FOR LINEAGES WITH AVY MUTATIONS.xlsx"
+
+cloneids<-multiplesheets(path)
+clone3_4list<-cloneids$`All lineages 3-4`$...1
+clone5morelist<-cloneids$`All lineages >5`$...1
+
+bcp434_clones3_4<-subset(V434, CLONE_ID %in% clone3_4list)
+bcp434_clones5more<-subset(V434, CLONE_ID %in% clone5morelist)
+```
+
+#Clones 3-4
+#remove unequal length sequences
+```{r remove sequences ith unequal lengths with germlin lignment, include=TRUE, message=FALSE, warning=FALSE}
+
+#bcp434_clones3_4 <- data.frame(lapply(bcp434_clones3_4, as.character), stringsAsFactors=FALSE)
+# then
+x <- data.frame(bcp434_clones3_4$SEQUENCE_ID,
+              nchar(as.character(bcp434_clones3_4$SEQUENCE_IMGT)))
+y <- data.frame(bcp434_clones3_4$SEQUENCE_ID,
+              nchar(as.character(bcp434_clones3_4$GERMLINE_IMGT)))
+z <- cbind(x,y)
+a <- subset(z, z$nchar.as.character.bcp434_clones3_4.SEQUENCE_IMGT.. !=z$nchar.as.character.bcp434_clones3_4.GERMLINE_IMGT..)
+
+# and get the row numberss that have this discrepency, and remove them
+bcp434_clones3_4_new <- subset(bcp434_clones3_4, 
+                             bcp434_clones3_4$SEQUENCE_ID %nin%
+                               a$bcp434_clones3_4.SEQUENCE_ID)
+
+dim(bcp434_clones3_4)
+dim(bcp434_clones3_4_new)
+```
+
+# clean up and rename columns so that they are recognized by Alakazam
+```{r clean up column names, include=TRUE, message=FALSE, warning=FALSE}
+bcp434_clones3_4 <- bcp434_clones3_4_new[!duplicated(bcp434_clones3_4_new$SEQUENCE_ID), ]
+bcp434_clones3_4$locus <- "IGH"
+
+bcp434_shortrees <- bcp434_clones3_4 %>%
+                     dplyr::rename(., "sequence_id"="SEQUENCE_ID")%>%
+                     dplyr::rename(., "clone_id"="CLONE_ID")%>%
+                     dplyr::rename(., "sequence_alignment"="SEQUENCE_IMGT")%>%
+                     dplyr::rename(., "germline_alignment"="GERMLINE_IMGT")%>%
+                     dplyr::rename(., "v_call"="V_CALL")%>%
+                     dplyr::rename(., "j_call"="J_CALL")%>%
+                     dplyr::rename(., "junction_length"="JUNCTION_LENGTH")%>%
+                     dplyr::rename(., "sequence"="SEQUENCE_INPUT")%>%
+                     mutate(across(where(is.factor), as.character)) %>%
+  mutate(dpucount= as.numeric(DUPCOUNT))
+
+#sanity check
+x <- data.frame(levels(factor(bcp434_shortrees$clone_id)))
+```
+
+# start creating individual clones because looping across the whole list doesnt work
+```{r create individual trees four examples given here, include=TRUE, message=FALSE, warning=FALSE}
+
+# BCP1_13463
+BCP1_13463 <- subset(bcp434_shortrees, clone_id=="BCP1_13463")
+BCP1_13463 <- makeChangeoClone(BCP1_13463, 
+                             text_fields=c("sequence_id",  "ISOTYPE", "SUBSET"),
+                             num_fields="DUPCOUNT",
+                             pad_end=T)
+
+BCP1_13463_clonetree <- buildPhylipLineage(BCP1_13463, phylip_exec=phylip_exec, rm_temp=TRUE)
+
+#BCP1_13500
+	 BCP1_13500 <- subset(bcp434_shortrees, clone_id=="BCP1_13500")
+	 BCP1_13500 <- makeChangeoClone(BCP1_13500, 
+                             text_fields=c("sequence_id",  "ISOTYPE", "SUBSET"),
+                             num_fields="DUPCOUNT",
+                             pad_end=T)
+	 BCP1_13500_clonetree <- buildPhylipLineage(BCP1_13500, phylip_exec=phylip_exec, rm_temp=TRUE)
+	 
+#BCP1_27738
+	 BCP1_27738 <- subset(bcp434_shortrees, clone_id=="BCP1_27738")
+	 BCP1_27738 <- makeChangeoClone(BCP1_27738, 
+                             text_fields=c("sequence_id",  "ISOTYPE", "SUBSET"),
+                             num_fields="DUPCOUNT",
+                             pad_end=T)
+	 BCP1_27738_clonetree <- buildPhylipLineage(BCP1_27738, phylip_exec=phylip_exec, rm_temp=TRUE)
+	 
+#BCP1_35920
+	 BCP1_35920 <- subset(bcp434_shortrees, clone_id=="BCP1_35920")
+	 BCP1_35920 <- makeChangeoClone(BCP1_35920, 
+                             text_fields=c("sequence_id",  "ISOTYPE", "SUBSET"),
+                             num_fields="DUPCOUNT",
+                             pad_end=T)
+	 BCP1_35920_clonetree <- buildPhylipLineage(BCP1_35920, phylip_exec=phylip_exec, rm_temp=TRUE)
+```
+
+# concatenate shorter lineages into a list
+```{r concatenate all trees into a list, include=TRUE, message=FALSE, warning=FALSE}
+shortertrees<-grep("_clonetree",names(.GlobalEnv),value=TRUE)
+shortertrees_list<-do.call("list",mget(shortertrees))
+```
+
+# Note: at this point, it is easier to create dataframes and plot trees individually/ manually
+```{r plot tree and save tree information shown for one clone, include=TRUE, message=FALSE, warning=FALSE}
+
+BCP1_13463_df <- data.frame(sequence_id=V(BCP1_13463_clonetree)$name, 
+               ISOTYPE=V(BCP1_13463_clonetree)$ISOTYPE,subset=V(BCP1_13463_clonetree)$SUBSET,
+               duplicate_count=V(BCP1_13463_clonetree)$DUPCOUNT,sequence=V(BCP1_13463_clonetree)$sequence)
+
+wb <- openxlsx::createWorkbook()
+addWorksheet(wb, "BCP1_13463")
+
+writeData(wb, "BCP1_13463",BCP1_13463_df, startCol = 1, startRow = 1, colNames = F, rowNames = T)
+
+
+# create tree
+V(BCP1_13463_clonetree)$color[V(BCP1_13463_clonetree)$SUBSET == "Naive"] <- "orchid3"
+V(BCP1_13463_clonetree)$color[V(BCP1_13463_clonetree)$SUBSET == "GC"] <- "red4"
+V(BCP1_13463_clonetree)$color[V(BCP1_13463_clonetree)$SUBSET == "MBC"] <- "limegreen"
+V(BCP1_13463_clonetree)$color[V(BCP1_13463_clonetree)$SUBSET == "PB"] <- "turquoise3"
+V(BCP1_13463_clonetree)$color[V(BCP1_13463_clonetree)$name == "Germline"] <- "black"
+V(BCP1_13463_clonetree)$color[grepl("Inferred", V(BCP1_13463_clonetree)$name)] <- "grey"
+V(BCP1_13463_clonetree)$shape <- "none"
+V(BCP1_13463_clonetree)$shape[V(BCP1_13463_clonetree)$ISOTYPE == "IgM"] <- "circle"
+V(BCP1_13463_clonetree)$shape[V(BCP1_13463_clonetree)$ISOTYPE == "IgG"] <- "rectangle"
+V(BCP1_13463_clonetree)$shape[V(BCP1_13463_clonetree)$ISOTYPE == "IgA"] <- "sphere"
+V(BCP1_13463_clonetree)$shape[V(BCP1_13463_clonetree)$ISOTYPE == "IgA2"] <- "sphere"
+par(mar=c(0, 0, 0, 0) + 0.05)
+
+
+pdf(".../Tonsil data 2024/Trees/BCP1_13463_clonetree.pdf", width = 20, height = 10)
+
+plot(BCP1_13463_clonetree, layout=layout_as_tree, vertex.frame.color="grey",
+     vertex.label.color="black", edge.label.color="black",vertex.size=3,
+     edge.arrow.mode=0)
+# Add legend
+legend("topleft", c("Germline", "Inferred", "Naive", "GC", "MBC", "PB"),
+       fill=c("black", "grey", "orchid3", "red4", "limegreen", "turquoise3"), cex=0.75)
+dev.off()
+
+
+# After running all, save workbook
+saveWorkbook(wb, ".../Tonsil data 2024/Trees/Shorter_lineage_tree_sequences_1-50.xlsx", overwrite = T)
+```
+
+
+# plot phylogenetic trees
+```{r plot trees, include=TRUE, message=FALSE, warning=FALSE}
+
+```
+
+	  
+## BASELINe analysis
+
+# 1. Collapse isoypes to broad categories (IgM, IgG, IgA) and remove naive B cell IgG and IgA
+```{r collapse Ig siotype subtypes in IgG and IgA, include=TRUE, message=FALSE, warning=FALSE}
+VH434<-VH434%>%mutate(., iso =
+                          case_when(ISOTYPE== "IgG1" ~ "IgG",
+                                    ISOTYPE== "IgG2" ~ "IgG",
+                                    ISOTYPE== "IgG3" ~ "IgG",
+                                    ISOTYPE== "IgG4" ~ "IgG",
+                                    ISOTYPE== "IgA1" ~ "IgA",
+                                    ISOTYPE== "IgA2" ~ "IgA",
+                                    ISOTYPE== "IgM" ~ "IgM",
+                                    ISOTYPE== "IgD" ~ "IgD"))
+
+# See how many class swithced naive B cells are present
+naiv_igg<-subset(VH434, VH434$SUBSET=="Naive" & VH434$iso=="IgG")
+nrow(naiv_igg)
+naiv_iga<-subset(VH434, VH434$SUBSET=="Naive" & VH434$iso=="IgA")
+nrow(naiv_iga)
+# Remove IgG and IgA from naive B cells
+VH434<-VH434[!(VH434$SUBSET=="Naive" & VH434$iso=="IgG"),] # No IGA but add a separate line of code, or add a | to separate the two conditions
+```
+
+# 2. Run CollapseClones
+```{r collapse clones across the data, include=TRUE, message=FALSE, warning=FALSE}
+db <- collapseClones(VH434, cloneColumn="CLONE_ID",
+sequenceColumn="SEQUENCE_IMGT",
+germlineColumn="GERMLINE_IMGT_D_MASK",
+method="thresholdedFreq", minimumFrequency=0.6,
+includeAmbiguous=FALSE, breakTiesStochastic=FALSE)
+```
+
+# 3. Sepearte db into IgM, IgG and IgA
+```{r separate the data into isotypes, include=TRUE, warning=FALSE, message=FALSE}
+db_igm<-subset(db, db$iso=="IgM")
+db_igg<-subset(db, db$iso=="IgG")
+db_iga<-subset(db, db$iso=="IgA")
+```
+
+# 4.a. IgM analysis
+```{r BASELINe IgM analysis, include=TRUE, message=FALSE, warning=FALSE}
+baseline_region_igm <- calcBaseline(db_igm,
+                               sequenceColumn="clonal_sequence",
+                               germlineColumn="clonal_germline",
+                               testStatistic="focused",
+                               regionDefinition=IMGT_V_BY_REGIONS,
+                               targetingModel=HH_S5F,
+                               nproc=1)
+grp_igm<-groupBaseline(baseline_region_igm, groupBy="SUBSET", nproc = 1)
+```
+
+# 4.b. IgG analysis
+```{r BASELINe IgG analysis, include=TRUE, message=FALSE, warning=FALSE}
+baseline_region_igg <- calcBaseline(db_igg,
+                                    sequenceColumn="clonal_sequence",
+                                    germlineColumn="clonal_germline",
+                                    testStatistic="focused",
+                                    regionDefinition=IMGT_V_BY_REGIONS,
+                                    targetingModel=HH_S5F,
+                                    nproc=1)
+grp_igg<-groupBaseline(baseline_region_igg, groupBy="SUBSET", nproc = 1)
+```
+
+# 4.c. IgA analysis
+```{r BASELINe IgA VH434, include=TRUE, message=FALSE, warning=FALSE}
+baseline_region_iga <- calcBaseline(db_iga,
+                                    sequenceColumn="clonal_sequence",
+                                    germlineColumn="clonal_germline",
+                                    testStatistic="focused",
+                                    regionDefinition=IMGT_V_BY_REGIONS,
+                                    targetingModel=HH_S5F,
+                                    nproc=1)
+grp_iga<-groupBaseline(baseline_region_iga, groupBy="SUBSET", nproc = 1)
+```
+
+# 5. Plot probability densities for each isotype
+```{r Plot probability densities for each isotype, include=TRUE, warning=FALSE, message=FALSE}
+subset_colors <- c("Naive"="darkorchid", "MBC"="firebrick",
+"GC"="seagreen", "PB"="steelblue")
+# And plot plots
+# IgM
+igm_cdr1<-plotBaselineDensity(grp_igm,  "SUBSET", 
+                              colorValues=subset_colors,
+                              subsetRegions="cdr1",
+                              sigmaLimits=c(-2, 2))
+igm_cdr2<-plotBaselineDensity(grp_igm,  "SUBSET", 
+                              colorValues=subset_colors,
+                              subsetRegions="cdr2",
+                              sigmaLimits=c(-2, 2))
+igm_fwr1<-plotBaselineDensity(grp_igm,  "SUBSET", 
+                              colorValues=subset_colors,
+                              subsetRegions="fwr1",
+                              sigmaLimits=c(-2, 2))
+igm_fwr2<-plotBaselineDensity(grp_igm,  "SUBSET", 
+                              colorValues=subset_colors,
+                              subsetRegions="fwr2",
+                              sigmaLimits=c(-2, 2))
+igm_fwr3<-plotBaselineDensity(grp_igm,  "SUBSET", 
+                              colorValues=subset_colors,
+                              subsetRegions="fwr3",
+                              sigmaLimits=c(-2, 2))
+
+#IgG
+igg_cdr1<-plotBaselineDensity(grp_igg,  "SUBSET", 
+                              colorValues=subset_colors,
+                              subsetRegions="cdr1",
+                              sigmaLimits=c(-2, 2))
+igg_cdr2<-plotBaselineDensity(grp_igg,  "SUBSET", 
+                              colorValues=subset_colors,
+                              subsetRegions="cdr2",
+                              sigmaLimits=c(-2, 2))
+igg_fwr1<-plotBaselineDensity(grp_igg,  "SUBSET", 
+                              colorValues=subset_colors,
+                              subsetRegions="fwr1",
+                              sigmaLimits=c(-2, 2))
+igg_fwr2<-plotBaselineDensity(grp_igg,  "SUBSET", 
+                              colorValues=subset_colors,
+                              subsetRegions="fwr2",
+                              sigmaLimits=c(-2, 2))
+igg_fwr3<-plotBaselineDensity(grp_igg,  "SUBSET", 
+                              colorValues=subset_colors,
+                              subsetRegions="fwr3",
+                              sigmaLimits=c(-2, 2))
+
+#Iga
+iga_cdr1<-plotBaselineDensity(grp_iga,  "SUBSET", 
+                              colorValues=subset_colors,
+                              subsetRegions="cdr1",
+                              sigmaLimits=c(-2, 2))
+iga_cdr2<-plotBaselineDensity(grp_iga,  "SUBSET", 
+                              colorValues=subset_colors,
+                              subsetRegions="cdr2",
+                              sigmaLimits=c(-2, 2))
+iga_fwr1<-plotBaselineDensity(grp_iga,  "SUBSET", 
+                              colorValues=subset_colors,
+                              subsetRegions="fwr1",
+                              sigmaLimits=c(-2, 2))
+iga_fwr2<-plotBaselineDensity(grp_iga,  "SUBSET", 
+                              colorValues=subset_colors,
+                              subsetRegions="fwr2",
+                              sigmaLimits=c(-2, 2))
+iga_fwr3<-plotBaselineDensity(grp_iga,  "SUBSET", 
+                              colorValues=subset_colors,
+                              subsetRegions="fwr3",
+                              sigmaLimits=c(-2, 2))
+```
